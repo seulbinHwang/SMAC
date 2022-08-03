@@ -39,77 +39,90 @@ class G2ANet(nn.Module):
         return torch.zeros((1, self.n_agents, self.rnn_hidden_dim))
 
     def forward(self, obs, hidden_state):
-        size = obs.shape[0]
-
+        # obs : (batch * num_agents, dim)
+        size = obs.shape[0] # batch * num_agents
+        # (batch * num_agents, dim) -> (batch * num_agents, rnn_hidden_dim)
         obs_encoding = f.relu(self.encoding(obs))
         h_in = hidden_state.reshape(-1, self.args.rnn_hidden_dim).to(self.device)
-
+        # (batch * num_agents, rnn_hidden_dim) + hidden_state -> (batch * num_agents, rnn_hidden_dim)
         h_out = self.h(obs_encoding, h_in)
 
         if self.args.hard:
             h = h_out.reshape(-1, self.args.n_agents,
-                              self.args.rnn_hidden_dim)
+                              self.args.rnn_hidden_dim) # (batch_size, 10, rnn_hidden_dim)
             input_hard = []
 
-            for i in range(self.args.n_agents):
+            for i in range(self.args.n_agents): # (10)
+                """
+                - per agent
+                """
                 h_i = h[:, i]  # (batch_size, rnn_hidden_dim)
                 h_hard_i = []
                 for j in range(self.args.n_agents):
                     if j != i:
+                        # ego obs_his + other obs_his -> (batch_size, rnn_hidden_dim * 2)
                         h_hard_i.append(torch.cat([h_i, h[:, j]], dim=-1))
 
-                h_hard_i = torch.stack(h_hard_i, dim=0)
+                h_hard_i = torch.stack(h_hard_i, dim=0) # [(batch_size, rnn_hidden_dim * 2)] * 9 -> (batch_size*9, rnn_hidden_dim * 2)
                 input_hard.append(h_hard_i)
 
+            # [(batch_size*9, rnn_hidden_dim * 2)] * 10 -> (batch_size*9*10, rnn_hidden_dim * 2)
             input_hard = torch.stack(input_hard, dim=-2)
-
+            # (batch_size*9*10, rnn_hidden_dim * 2) -> (9, batch_size * 10, rnn_hidden_dim * 2)
             input_hard = input_hard.view(self.args.n_agents - 1, -1, self.args.rnn_hidden_dim * 2)
 
+            # h_hard = (2, obs_shape, rnn_hidden_dim)
             h_hard = torch.zeros((2 * 1, size, self.args.rnn_hidden_dim)).to(self.device)
 
             h_hard, _ = self.hard_bi_GRU(input_hard, h_hard)  # (n_agents - 1,batch_size * n_agents,rnn_hidden_dim * 2)
             h_hard = h_hard.permute(1, 0, 2)  # (batch_size * n_agents, n_agents - 1, rnn_hidden_dim * 2)
             h_hard = h_hard.reshape(-1,
                                     self.args.rnn_hidden_dim * 2)  # (batch_size * n_agents * (n_agents - 1), rnn_hidden_dim * 2)
-
+            # (batch_size * n_agents * (n_agents - 1), rnn_hidden_dim * 2) -> # (batch_size * n_agents * (n_agents - 1), 2)
             hard_weights = self.hard_encoding(h_hard)
-            hard_weights = f.gumbel_softmax(hard_weights, tau=0.01)
+            hard_weights = f.gumbel_softmax(hard_weights, tau=0.01) # (batch_size * n_agents * (n_agents - 1), 2)
             # print(hard_weights)
-            hard_weights = hard_weights[:, 1].view(-1, self.args.n_agents, 1, self.args.n_agents - 1)
-            hard_weights = hard_weights.permute(1, 0, 2, 3)
-
+            # (batch_size * n_agents * (n_agents - 1), 2) -> (batch_size * n_agents * (n_agents - 1)) -> (n_agents, batch, 1, n_agents-1)
+            hard_weights = hard_weights[:, 1].view(self.args.n_agents, -1, 1, self.args.n_agents - 1)
         else:
             hard_weights = torch.ones((self.args.n_agents, size // self.args.n_agents, 1, self.args.n_agents - 1))
 
         # Soft Attention
+        # h_out: (batch * num_agents, rnn_hidden_dim) -> (batch, num_agents, attention_dim)
         q = self.q(h_out).reshape(-1, self.args.n_agents,
                                   self.attention_dim)  # (batch_size, n_agents, args.attention_dim)
         k = self.k(h_out).reshape(-1, self.args.n_agents,
                                   self.attention_dim)  # (batch_size, n_agents, args.attention_dim)
+        # use_bias + relu
         v = f.relu(self.v(h_out)).reshape(-1, self.args.n_agents,
                                           self.attention_dim)  # (batch_size, n_agents, args.attention_dim)
         x = []
         for i in range(self.args.n_agents):
-            q_i = q[:, i].view(-1, 1, self.attention_dim)
-            k_i = [k[:, j] for j in range(self.args.n_agents) if j != i]
-            v_i = [v[:, j] for j in range(self.args.n_agents) if j != i]
+            """
+            per agent
+            """
+            q_i = q[:, i].view(-1, 1, self.attention_dim) # (batch_size, 1, args.attention_dim)
+            k_i = [k[:, j] for j in range(self.args.n_agents) if j != i] # [(batch_size, args.attention_dim)] * 9
+            v_i = [v[:, j] for j in range(self.args.n_agents) if j != i] # [(batch_size, args.attention_dim)] * 9
 
-            k_i = torch.stack(k_i, dim=0)
-            k_i = k_i.permute(1, 2, 0)
-            v_i = torch.stack(v_i, dim=0)
-            v_i = v_i.permute(1, 2, 0)
+            k_i = torch.stack(k_i, dim=0) # TODO: check (9, batch_size, attention_dim)
+            k_i = k_i.permute(1, 2, 0) # (b, attention_dim, 9)
+            v_i = torch.stack(v_i, dim=0) # (9, batch_size, attention_dim)
+            v_i = v_i.permute(1, 2, 0) # (b, attention_dim, 9)
 
-            score = torch.matmul(q_i, k_i)
+            score = torch.matmul(q_i, k_i) # (b, 1, attention_dim) * (b, attention_dim, 9) = (b, 1, 9)
 
-            scaled_score = score / np.sqrt( self.attention_dim)
+            scaled_score = score / np.sqrt( self.attention_dim) # (b, 1, 9)
 
             soft_weight = f.softmax(scaled_score, dim=-1)  # (batch_size，1, n_agents - 1)
-
-            x_i = (v_i * soft_weight * hard_weights[i]).sum(dim=-1)
-            x.append(x_i)
+            # soft_weight: (batch_size，1, n_agents - 1)
+            # hard_weights: (n_agents, batch, 1, n_agents-1) -> i -> (batch, 1, n_agents - 1)
+            # (b, attention_dim, 9) * (b, 1, 9) * (b, 1, 9) = (b, attention_dim, 9) -> (b, attention_dim)
+            x_i = (v_i * soft_weight * hard_weights[i]).sum(dim=-1) # (b, attention_dim)
+            x.append(x_i) #[(b, attention_dim)] * 10
 
         x = torch.stack(x, dim=1).reshape(-1,  self.attention_dim)  # (batch_size * n_agents, args.attention_dim)
-        final_input = torch.cat([h_out, x], dim=-1)
-        output = self.decoding(final_input)
+        final_input = torch.cat([h_out, x], dim=-1) # (batch * num_agents, rnn_hidden_dim) + (batch * num_agents, attention_dim)
+        output = self.decoding(final_input) # (batch * num_agents, action_dim)
 
         return output, h_out

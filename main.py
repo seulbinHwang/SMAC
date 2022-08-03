@@ -29,8 +29,8 @@ if __name__ == '__main__':
     #algorithm = 'Role_Learning_Agent/qmix_smac_latent'
     # algorithm = 'RNN_AGENT/noisemix_smac'
     # algorithm = 'RNN_AGENT/noisemix_smac'
-    #algorithm = 'G2ANet_Agent/qmix_beta'
-    algorithm = 'RNN_AGENT/graphmix'
+    algorithm = 'G2ANet_Agent/coma'
+    # algorithm = 'RNN_AGENT/graphmix'
     minigame = '2s3z'
 
     config = cu.config_copy(cu.get_config(algorithm, minigame))
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     th.manual_seed(random_Seed)
     config['env_args']['seed'] = random_Seed
 
-    is_offpg = config['off_pg']
+    is_offpg = config['off_pg'] # False
 
     if is_offpg:
         offpg_run(config, logger, minigame)
